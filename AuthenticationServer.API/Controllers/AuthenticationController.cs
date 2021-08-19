@@ -5,8 +5,12 @@ using System.Threading.Tasks;
 using AuthenticationServer.API.Models;
 using AuthenticationServer.API.Models.Requests;
 using AuthenticationServer.API.Models.Responses;
+using AuthenticationServer.API.Services.Authenticators;
+using AuthenticationServer.API.Services.RefreshTokenRepositories;
 using AuthenticationServer.API.Services.TokenGenerators;
+using AuthenticationServer.API.Services.TokenValidators;
 using AuthenticationServer.API.Services.UserRepositories;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 
@@ -19,25 +23,16 @@ namespace AuthenticationServer.API.Controllers
     public class AuthenticationController : ControllerBase
     {
         private readonly IUserRepository _userRepository;
-        private readonly AccessTokenGenerator _accesTokenGenerator;
+        private readonly RefreshTokenValidator _refreshTokenValidator;
+        private readonly IRefreshTokenRepository _refreshTokenRepository;
+        private readonly Authenticator _authenticator;
 
-        public AuthenticationController(IUserRepository userRepository, AccessTokenGenerator accessTokenGenerator)
+        public AuthenticationController(IUserRepository userRepository, RefreshTokenValidator refreshTokenValidator, IRefreshTokenRepository refreshTokenRepository, Authenticator authenticator)
         {
             this._userRepository = userRepository;
-            _accesTokenGenerator = accessTokenGenerator;
-        }
-        // GET: api/<AuthenticationController>
-        [HttpGet]
-        public IEnumerable<string> Get()
-        {
-            return new string[] { "value1", "value2" };
-        }
-
-        // GET api/<AuthenticationController>/5
-        [HttpGet("{id}")]
-        public string Get(int id)
-        {
-            return "value";
+            _refreshTokenValidator = refreshTokenValidator;
+            _refreshTokenRepository = refreshTokenRepository;
+            _authenticator = authenticator;
         }
 
         // POST api/<AuthenticationController>
@@ -90,26 +85,56 @@ namespace AuthenticationServer.API.Controllers
             {
                 return Unauthorized();
             }
-            var accessToken = _accesTokenGenerator.GenerateToken(user);
-            AuthenticatedUserResponse tokenResponse = new AuthenticatedUserResponse
-            {
-                token = accessToken
-              };
+
+            AuthenticatedUserResponse tokenResponse = await _authenticator.Authenticate(user);
             return Ok(tokenResponse);
         }
 
-        // PUT api/<AuthenticationController>/5
-        [HttpPut("{id}")]
-        public void Put(int id, [FromBody] string value)
+        [HttpPost("refresh")]
+        public async Task<IActionResult> Refresh([FromBody] RefreshRequest request)
         {
+            if (!ModelState.IsValid)
+            {
+                return BadRequestModelState();
+            }
+
+            bool isValidRefreshToken = _refreshTokenValidator.Validate(request.RefreshToken);
+
+            if (!isValidRefreshToken)
+            {
+                return BadRequest(new ErrorResponse("Invalid refresh Token"));
+            }
+
+            RefreshToken refreshTokenDTO = await _refreshTokenRepository.GetByToken(request.RefreshToken);
+            if(refreshTokenDTO == null)
+            {
+                return NotFound(new ErrorResponse("Invalid refresh Token"));
+            }
+
+            await _refreshTokenRepository.Delete(refreshTokenDTO.Id);
+
+            User user = await _userRepository.GetById(refreshTokenDTO.UserId);
+            if (user == null)
+            {
+                return NotFound(new ErrorResponse("User not found "));
+            }
+
+            AuthenticatedUserResponse tokenResponse = await _authenticator.Authenticate(user);
+            return Ok(tokenResponse);
         }
 
-        // DELETE api/<AuthenticationController>/5
-        [HttpDelete("{id}")]
-        public void Delete(int id)
+        [Authorize]
+        [HttpDelete("logout")]
+        public async Task<IActionResult> Logout()
         {
-        }
+            string rawUserId = HttpContext.User.FindFirst("id").Value;
+            if(!Guid.TryParse(rawUserId, out Guid userId)) {
+                return Unauthorized();
+            }
 
+            await _refreshTokenRepository.DeleteAll(userId);
+            return NoContent();
+        }
         private IActionResult BadRequestModelState()
         {
             var errorMessages = ModelState.Values.SelectMany(item => item.Errors.Select(error => error.ErrorMessage));

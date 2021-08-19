@@ -1,15 +1,18 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
+using System.Text;
 using AuthenticationServer.API.Models;
+using AuthenticationServer.API.Services.Authenticators;
+using AuthenticationServer.API.Services.RefreshTokenRepositories;
 using AuthenticationServer.API.Services.TokenGenerators;
+using AuthenticationServer.API.Services.TokenValidators;
 using AuthenticationServer.API.Services.UserRepositories;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.IdentityModel.Tokens;
 
 namespace AuthenticationServer.API
 {
@@ -32,8 +35,28 @@ namespace AuthenticationServer.API
             _configuration.Bind("Authentication", authenticationConfiguration);
             services.AddSingleton(authenticationConfiguration);
 
+            services.AddSingleton<TokenGenerator>();
             services.AddSingleton<AccessTokenGenerator>();
+            services.AddSingleton<RefreshTokenGenerator>();
+            services.AddSingleton<RefreshTokenValidator>();
+            services.AddSingleton<Authenticator>();
+
             services.AddSingleton<IUserRepository, InMemoryUserRepository>();
+            services.AddSingleton<IRefreshTokenRepository, InMemoryRefreshTokenRepository>();
+
+            services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(o =>
+            {
+                o.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
+                {
+                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(authenticationConfiguration.AccessTokenSecret)),
+                    ValidIssuer = authenticationConfiguration.Issuer,
+                    ValidAudience = authenticationConfiguration.Audience,
+                    ValidateIssuer = true,
+                    ValidateAudience = true,
+                    ValidateIssuerSigningKey = true
+                };
+            }
+            );
             services.AddSwaggerGen();
         }
 
@@ -54,7 +77,8 @@ namespace AuthenticationServer.API
             });
 
             app.UseRouting();
-
+            app.UseAuthentication();
+            app.UseAuthorization();
             app.UseEndpoints(endpoints =>
             {
                 //endpoints.MapGet("/", async context =>
